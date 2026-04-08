@@ -169,18 +169,20 @@ export function isInsideTmux(): boolean {
 }
 
 /**
- * Returns tmux target args (`['-t', sessionId]`) parsed from the TMUX env var,
+ * Returns tmux target args (`['-t', $sessionId]`) parsed from the TMUX env var,
  * or an empty array if not inside tmux. The TMUX env var format is:
- * `{session_id},{socket_path}` — e.g. `$1,/tmp/tmux-501/default`
+ * `{socket_path},{server_pid},{session_index}` — e.g. `/private/tmp/tmux-501/default,61833,2`
+ * where `2` maps to tmux session `$2`.
  *
- * Used to scope all tmux commands to the session that owns the opencode process,
- * preventing pane spawns in unrelated tmux sessions when multiple are active.
+ * Without explicit targeting, tmux commands operate on whichever session last had focus,
+ * causing pane spawns in unrelated tmux sessions when multiple are active.
  */
 export function getTmuxSessionTarget(): string[] {
   const tmuxEnv = process.env.TMUX;
   if (!tmuxEnv) return [];
-  const tmuxSessionId = tmuxEnv.split(',')[0];
-  if (tmuxSessionId) return ['-t', tmuxSessionId];
+  const parts = tmuxEnv.split(',');
+  const sessionIndex = parts[2];
+  if (sessionIndex !== undefined) return ['-t', '$' + sessionIndex];
   return [];
 }
 
