@@ -15,6 +15,15 @@ import {
 
 const BASE_BACKOFF_MS = 250;
 
+/**
+ * Captured at module load time to get the original tmux pane ID.
+ * TMUX_PANE is set by tmux to the pane ID (e.g., %0, %1) when a process runs inside tmux.
+ * We capture this at startup so we always know the original pane, even if
+ * the user switches to a different pane later.
+ */
+const ORIGINAL_TMUX_PANE = process.env.TMUX_PANE;
+
+
 let tmuxPath: string | null = null;
 let tmuxChecked = false;
 
@@ -185,6 +194,17 @@ export function getTmuxSessionTarget(): string[] {
   if (sessionIndex !== undefined) return ['-t', '$' + sessionIndex];
   return [];
 }
+
+/**
+ * Gets target pane for tmux commands.
+ * Returns ['-t', '<paneId>'] if ORIGINAL_TMUX_PANE is available,
+ * otherwise returns empty array (splits currently active pane).
+ */
+function getPaneTarget(): string[] {
+  if (!ORIGINAL_TMUX_PANE) return [];
+  return ['-t', ORIGINAL_TMUX_PANE];
+}
+
 
 async function applyLayout(
   tmux: string,
@@ -393,9 +413,14 @@ async function attemptSpawnPane(
 ): Promise<SpawnPaneResult> {
   const opencodeCmd = `opencode attach ${serverUrl} --session ${sessionId}`;
 
-  const targetArgs = getTmuxSessionTarget();
+  // Prefer pane targeting over session targeting for more precise placement
+  const paneTarget = getPaneTarget();
+  const targetArgs = paneTarget.length > 0 ? paneTarget : getTmuxSessionTarget();
   if (targetArgs.length > 0) {
-    log('[tmux] attemptSpawnPane: targeting parent session', { tmuxSessionId: targetArgs[1] });
+    log('[tmux] attemptSpawnPane: targeting', {
+      target: paneTarget.length > 0 ? 'pane' : 'session',
+      targetId: targetArgs[1],
+    });
   }
 
   const args = [
