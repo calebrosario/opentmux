@@ -15,6 +15,15 @@ import {
 
 const BASE_BACKOFF_MS = 250;
 
+/**
+ * Captured at module load time to get the original tmux pane ID.
+ * TMUX_PANE is set by tmux to the pane ID (e.g., %0, %1) when a process runs inside tmux.
+ * We capture this at startup so we always know the original pane, even if
+ * the user switches to a different pane later.
+ */
+const ORIGINAL_TMUX_PANE = process.env.TMUX_PANE;
+
+
 let tmuxPath: string | null = null;
 let tmuxChecked = false;
 
@@ -168,13 +177,43 @@ export function isInsideTmux(): boolean {
   return !!process.env.TMUX;
 }
 
+/**
+ * Returns tmux target args (`['-t', $sessionId]`) parsed from the TMUX env var,
+ * or an empty array if not inside tmux. The TMUX env var format is:
+ * `{socket_path},{server_pid},{session_index}` — e.g. `/private/tmp/tmux-501/default,61833,2`
+ * where `2` maps to tmux session `$2`.
+ *
+ * Without explicit targeting, tmux commands operate on whichever session last had focus,
+ * causing pane spawns in unrelated tmux sessions when multiple are active.
+ */
+export function getTmuxSessionTarget(): string[] {
+  const tmuxEnv = process.env.TMUX;
+  if (!tmuxEnv) return [];
+  const parts = tmuxEnv.split(',');
+  const sessionIndex = parts[2];
+  if (sessionIndex !== undefined) return ['-t', '$' + sessionIndex];
+  return [];
+}
+
+/**
+ * Gets target pane for tmux commands.
+ * Returns ['-t', '<paneId>'] if ORIGINAL_TMUX_PANE is available,
+ * otherwise returns empty array (splits currently active pane).
+ */
+function getPaneTarget(): string[] {
+  if (!ORIGINAL_TMUX_PANE) return [];
+  return ['-t', ORIGINAL_TMUX_PANE];
+}
+
+
 async function applyLayout(
   tmux: string,
   layout: TmuxLayout,
   mainPaneSize: number,
 ): Promise<void> {
+  const target = getTmuxSessionTarget();
   try {
-    await spawnAsyncFn([tmux, 'select-layout', layout]);
+    await spawnAsyncFn([tmux, 'select-layout', ...target, layout]);
 
     if (layout === 'main-horizontal' || layout === 'main-vertical') {
       const sizeOption =
@@ -183,10 +222,11 @@ async function applyLayout(
       await spawnAsyncFn([
         tmux,
         'set-window-option',
+        ...target,
         sizeOption,
         `${mainPaneSize}%`,
       ]);
-      await spawnAsyncFn([tmux, 'select-layout', layout]);
+      await spawnAsyncFn([tmux, 'select-layout', ...target, layout]);
     }
 
     log('[tmux] applyLayout: applied', { layout, mainPaneSize });
@@ -196,7 +236,8 @@ async function applyLayout(
 }
 
 async function getCurrentPaneId(tmux: string): Promise<string | null> {
-  const result = await spawnAsyncFn([tmux, 'display-message', '-p', '#{pane_id}']);
+  const target = getTmuxSessionTarget();
+  const result = await spawnAsyncFn([tmux, 'display-message', ...target, '-p', '#{pane_id}']);
   const paneId = result.stdout.trim();
   return paneId ? paneId : null;
 }
@@ -204,9 +245,11 @@ async function getCurrentPaneId(tmux: string): Promise<string | null> {
 async function getWindowSize(
   tmux: string,
 ): Promise<{ width: number; height: number } | null> {
+  const target = getTmuxSessionTarget();
   const result = await spawnAsyncFn([
     tmux,
     'display-message',
+    ...target,
     '-p',
     '#{window_width} #{window_height}',
   ]);
@@ -219,7 +262,8 @@ async function getWindowSize(
 }
 
 async function listPaneIds(tmux: string): Promise<string[]> {
-  const result = await spawnAsyncFn([tmux, 'list-panes', '-F', '#{pane_id}']);
+  const target = getTmuxSessionTarget();
+  const result = await spawnAsyncFn([tmux, 'list-panes', ...target, '-F', '#{pane_id}']);
   return result.stdout
     .split('\n')
     .map((l) => l.trim())
@@ -281,7 +325,8 @@ async function tryApplyMainVerticalMultiColumnLayout(
     mainPanePercent,
   });
 
-  const result = await spawnAsyncFn([tmux, 'select-layout', layoutString]);
+  const target = getTmuxSessionTarget();
+  const result = await spawnAsyncFn([tmux, 'select-layout', ...target, layoutString]);
   if (result.exitCode === 0) {
     log('[tmux] applyTmuxLayout: applied custom layout', {
       columns: wpColumns.length,
@@ -335,7 +380,8 @@ export async function applyTmuxLayout(): Promise<void> {
       error: String(err),
     });
     try {
-      await spawnAsyncFn([tmux, 'select-layout', layout === 'tiled' ? 'tiled' : 'main-vertical']);
+      const target = getTmuxSessionTarget();
+      await spawnAsyncFn([tmux, 'select-layout', ...target, layout === 'tiled' ? 'tiled' : 'main-vertical']);
     } catch (fallbackErr) {
       log('[tmux] applyTmuxLayout: fallback also failed', { error: String(fallbackErr) });
     }
@@ -367,8 +413,19 @@ async function attemptSpawnPane(
 ): Promise<SpawnPaneResult> {
   const opencodeCmd = `opencode attach ${serverUrl} --session ${sessionId}`;
 
+  // Prefer pane targeting over session targeting for more precise placement
+  const paneTarget = getPaneTarget();
+  const targetArgs = paneTarget.length > 0 ? paneTarget : getTmuxSessionTarget();
+  if (targetArgs.length > 0) {
+    log('[tmux] attemptSpawnPane: targeting', {
+      target: paneTarget.length > 0 ? 'pane' : 'session',
+      targetId: targetArgs[1],
+    });
+  }
+
   const args = [
     'split-window',
+    ...targetArgs,
     '-h',
     '-d',
     '-P',
