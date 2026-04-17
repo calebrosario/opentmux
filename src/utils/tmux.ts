@@ -391,7 +391,7 @@ async function attemptSpawnPane(
   tmux: string,
   serverUrl: string,
 ): Promise<SpawnPaneResult> {
-  const opencodeCmd = `opencode attach ${serverUrl} --session ${sessionId}`;
+  const opencodeCmd = `exec opencode attach ${serverUrl} --session ${sessionId}`;
 
   const targetArgs = getTmuxSessionTarget();
   if (targetArgs.length > 0) {
